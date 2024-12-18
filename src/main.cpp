@@ -6,7 +6,9 @@
 #define SOUND_SPEED 0.0343  // Speed of sound in cm/μs
 
 long duration;
-float distanceMm;
+float distanceCm;
+unsigned long lastPrintTime = 0;  // Store the last print time
+bool isOn = false; // Current state flag
 
 void setup() {
   Serial.begin(115200);  // Initialize Serial Monitor
@@ -28,15 +30,11 @@ void loop() {
   duration = pulseIn(ECHO_PIN, HIGH);
 
   // Calculate the distance in cm
-  distanceMm = (duration * SOUND_SPEED) / 2;
+  distanceCm = (duration * SOUND_SPEED) / 2;
 
   // Print the calculated distance
-  Serial.print("Distance (mm): ");
-  Serial.println(distanceMm);
+  Serial.print("Distance (Cm): ");
+  Serial.println(distanceCm);
 
   delay(1000);  // Wait for 1 second
 }
-// put function definitions here:
-// int myFunction(int x, int y) {
-//   return x + y;
-// }
