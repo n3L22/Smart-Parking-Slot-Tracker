@@ -3,86 +3,71 @@
 #include <HTTPClient.h>
 #include <NTPClient.h>
 #include <WiFiUdp.h>
-#include <ArduinoJson.h>
+#include <DHT.h>
 
 // Function declarations
-void uploadToGoogleSheets(String timestamp, float distance, String parkingStatus, float temperature, float humidity, String weatherDesc);
-String getWeatherData();
+void uploadToGoogleSheets(String timestamp, float distance, String parkingStatus, float temperature, float humidity);
 
-// WiFi Credentials - replace as needed
-const char* WIFI_SSID = "--"; 
-const char* WIFI_PASSWORD = "--";
+// Initialize DHT sensor
+#define DHTPIN 4       // DHT11 connected to GPIO 4
+#define DHTTYPE DHT11  // Changed to DHT11
+DHT dht(DHTPIN, DHTTYPE);
+
+// WiFi Credentials
+const char* WIFI_SSID = "---";     // Replace with your WiFi name
+const char* WIFI_PASSWORD = "---";   // Replace with your WiFi password
 
 // Google Apps Script Web App URL
-const String GOOGLE_SCRIPT_URL = "--"; //Replace with your Web APP URL key
-
-// OpenWeatherMap API Configuration
-const String WEATHER_API_KEY = "--"; // Replace with your API key
-const String CITY = "London"; // Replace with your city
-const String COUNTRY_CODE = "UK"; // Replace with your country code
-const String WEATHER_URL = "http://api.openweathermap.org/data/2.5/weather?q=" + CITY + "," + COUNTRY_CODE + "&APPID=" + WEATHER_API_KEY + "&units=metric";
+const String GOOGLE_SCRIPT_URL = "----";  // Replace with your new URL
 
 // Ultrasonic Sensor Pins
 #define TRIG_PIN 2
 #define ECHO_PIN 9
-#define SOUND_SPEED 0.0343
+#define SOUND_SPEED 0.0343 
 
 // NTP Client setup
 WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP, "pool.ntp.org", 3600);
+NTPClient timeClient(ntpUDP, "uk.pool.ntp.org", 0);  // 3600 = UTC+1 for British summer time
 
 // Variables
 long duration;
 float distanceCm;
 unsigned long lastUploadTime = 0;
-unsigned long lastWeatherCheck = 0;
 const long UPLOAD_INTERVAL = 30000;    // Upload every 30 seconds
-const long WEATHER_CHECK_INTERVAL = 300000; // Check weather every 5 minutes
-float currentTemp = 0;
-float currentHumidity = 0;
-String currentWeatherDesc = "";
 
 void setup() {
   Serial.begin(115200);
   delay(1000);
-  Serial.println("\n\nStarting Smart Parking System...");
+  Serial.println("Starting...");
+  
+  // Initialize DHT sensor
+  dht.begin();
+  Serial.println("DHT11 sensor initialized");
   
   pinMode(TRIG_PIN, OUTPUT);
   pinMode(ECHO_PIN, INPUT);
 
-  Serial.print("Connecting to WiFi: ");
-  Serial.println(WIFI_SSID);
-  
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+  Serial.print("Connecting to WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
-    attempts++;
   }
+  Serial.println("\nWiFi Connected");
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
 
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\nWiFi Connected Successfully!");
-    Serial.print("IP Address: ");
-    Serial.println(WiFi.localIP());
-    Serial.print("Signal Strength (RSSI): ");
-    Serial.print(WiFi.RSSI());
-    Serial.println(" dBm");
-  } else {
-    Serial.println("\nWiFi Connection FAILED!");
-    Serial.println("Restarting ESP32...");
-    delay(1000);
-    ESP.restart();
-  }
-
+  // Initialize NTP Client with more detailed setup
   timeClient.begin();
-  timeClient.setTimeOffset(3600);
-  Serial.println("NTP Client initialized");
+  timeClient.setTimeOffset(0);     // UTC+0 for London in winter
+  timeClient.setUpdateInterval(60000); // Update every minute
   
-  // Initial weather check
-  Serial.println("Getting initial weather data...");
-  String weatherData = getWeatherData();
-  Serial.println("Setup complete!");
+  // Force time update
+  while(!timeClient.update()) {
+    timeClient.forceUpdate();
+    delay(500);
+  }
+  Serial.println("NTP Client initialized");
 }
 
 void loop() {
@@ -96,95 +81,69 @@ void loop() {
   duration = pulseIn(ECHO_PIN, HIGH);
   distanceCm = (duration * SOUND_SPEED) / 2;
 
+  // Read DHT11 sensor
+  float humidity = dht.readHumidity();
+  float temperature = dht.readTemperature();
+  
   // Update Time
   timeClient.update();
   String formattedTime = timeClient.getFormattedTime();
 
-  // Check weather periodically
-  if (millis() - lastWeatherCheck >= WEATHER_CHECK_INTERVAL) {
-    getWeatherData();
-    lastWeatherCheck = millis();
-  }
-
   // Determine Parking Status
   String parkingStatus = (distanceCm < 20) ? "Occupied" : "Free";
 
-  // Upload to Google Sheets periodically
-  if (millis() - lastUploadTime > UPLOAD_INTERVAL) {
-    uploadToGoogleSheets(formattedTime, distanceCm, parkingStatus, currentTemp, currentHumidity, currentWeatherDesc);
-    lastUploadTime = millis();
-  }
-
-  // Debug output
-  Serial.print("Distance: ");
-  Serial.print(distanceCm);
-  Serial.print(" cm | Status: ");
-  Serial.print(parkingStatus);
-  Serial.print(" | Time: ");
-  Serial.print(formattedTime);
-  Serial.print(" | Temp: ");
-  Serial.print(currentTemp);
-  Serial.print("°C | Weather: ");
-  Serial.println(currentWeatherDesc);
-
-  delay(1000);
-}
-
-String getWeatherData() {
-  if (WiFi.status() == WL_CONNECTED) {
-    HTTPClient http;
-    http.begin(WEATHER_URL);
-    
-    int httpResponseCode = http.GET();
-    
-    if (httpResponseCode > 0) {
-      String payload = http.getString();
-      
-      // Parse JSON response
-      DynamicJsonDocument doc(1024);
-      DeserializationError error = deserializeJson(doc, payload);
-      
-      if (!error) {
-        currentTemp = doc["main"]["temp"].as<float>();
-        currentHumidity = doc["main"]["humidity"].as<float>();
-        currentWeatherDesc = doc["weather"][0]["description"].as<String>();
-        
-        Serial.println("Weather data updated successfully");
-      }
-      
-      return payload;
-    } else {
-      Serial.print("Error getting weather data: ");
-      Serial.println(httpResponseCode);
-      return "Error";
+  // Check if DHT reading failed
+  if (isnan(temperature) || isnan(humidity)) {
+    Serial.println("Failed to read from DHT sensor!");
+  } else {
+    // Upload to Google Sheets periodically
+    if (millis() - lastUploadTime > UPLOAD_INTERVAL) {
+      uploadToGoogleSheets(formattedTime, distanceCm, parkingStatus, temperature, humidity);
+      lastUploadTime = millis();
     }
-    
-    http.end();
+
+    // Debug output
+    Serial.print("Time: ");
+    Serial.print(formattedTime);
+    Serial.print(" | Distance: ");
+    Serial.print(distanceCm);
+    Serial.print(" cm | Status: ");
+    Serial.print(parkingStatus);
+    Serial.print(" | Temp: ");
+    Serial.print(temperature);
+    Serial.print("°C | Humidity: ");
+    Serial.print(humidity);
+    Serial.println("%");
   }
-  return "Not connected";
+
+  delay(2000); // Wait for 2 seconds between measurements
 }
 
-void uploadToGoogleSheets(String timestamp, float distance, String parkingStatus, float temperature, float humidity, String weatherDesc) {
+void uploadToGoogleSheets(String timestamp, float distance, String parkingStatus, float temperature, float humidity) {
   if (WiFi.status() == WL_CONNECTED) {
     HTTPClient http;
+    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
     http.begin(GOOGLE_SCRIPT_URL);
     http.addHeader("Content-Type", "application/json");
 
-    // Prepare JSON payload with weather data
+    // Fixed JSON format (removed extra quote)
     String jsonPayload = "{\"timestamp\":\"" + timestamp + 
-                         "\",\"distance\":" + String(distance) + 
+                         "\",\"distance\":" + String(distance, 2) + 
                          ",\"parkingStatus\":\"" + parkingStatus + 
-                         "\",\"temperature\":" + String(temperature) + 
-                         ",\"humidity\":" + String(humidity) + 
-                         ",\"weather\":\"" + weatherDesc + "\"}";
+                         "\",\"temperature\":" + String(temperature, 2) + 
+                         ",\"humidity\":" + String(humidity, 2) + 
+                         "}";
+
+    Serial.print("\nSending: ");
+    Serial.println(jsonPayload);
 
     int httpResponseCode = http.POST(jsonPayload);
     
     if (httpResponseCode > 0) {
       String response = http.getString();
-      Serial.println("HTTP Response: " + response);
+      Serial.println("Response: " + response);
     } else {
-      Serial.print("Error on sending POST: ");
+      Serial.print("Error: ");
       Serial.println(httpResponseCode);
     }
 
